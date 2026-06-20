@@ -18,13 +18,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const project = useProjectStore((s) => s.project);
-  const deviceRecords = useProjectStore((s) => s.deviceRecords);
+  const mergedRecords = useProjectStore((s) => s.mergedRecords);
 
   const currentIdx = NAV_ITEMS.findIndex((item) => item.path === location.pathname);
   const canNavigate = (path: string) => {
     if (path === '/import') return true;
-    if (path === '/review') return deviceRecords.length > 0;
-    if (path === '/report') return deviceRecords.length > 0;
+    if (path === '/review') return mergedRecords.length > 0;
+    if (path === '/report') return mergedRecords.length > 0;
     return false;
   };
 
@@ -92,7 +92,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <h1 className="text-sm font-mono font-medium text-[#E8EDF2] tracking-tight truncate max-w-[500px]">
                 {project.name}
               </h1>
-              <span className="badge-info">{deviceRecords.length} 条记录</span>
+              <span className="badge-info">{mergedRecords.length} 条合并记录</span>
             </div>
             <div className="flex items-center gap-2">
               {NAV_ITEMS.map((item, idx) => (

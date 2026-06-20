@@ -42,14 +42,14 @@ export default function ReportPage() {
   const navigate = useNavigate();
   const reportRef = useRef<HTMLDivElement>(null);
 
-  const deviceRecords = useProjectStore((s) => s.deviceRecords);
+  const mergedRecords = useProjectStore((s) => s.mergedRecords);
   const transportParams = useProjectStore((s) => s.transportParams);
   const annotations = useProjectStore((s) => s.annotations);
   const selectedTemplate = useProjectStore((s) => s.selectedTemplate);
   const setSelectedTemplate = useProjectStore((s) => s.setSelectedTemplate);
 
-  const metrics = getReportMetrics(deviceRecords, transportParams, annotations);
-  const reportText = generateReport(deviceRecords, transportParams, annotations, selectedTemplate);
+  const metrics = getReportMetrics(mergedRecords, transportParams, annotations);
+  const reportText = generateReport(mergedRecords, transportParams, annotations, selectedTemplate);
 
   const templates: ReportTemplate[] = ['customer', 'internal_ops', 'claims'];
 

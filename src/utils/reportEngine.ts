@@ -1,5 +1,5 @@
 import type {
-  DeviceRecord,
+  MergedRecord,
   TransportParams,
   Annotation,
   ReportTemplate,
@@ -8,36 +8,40 @@ import type {
 import { ANOMALY_TYPE_LABELS, REPORT_TEMPLATE_LABELS, CARGO_TYPE_LABELS } from '@/types';
 
 function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${minutes}分钟`;
+  if (!isFinite(minutes) || minutes <= 0) return '0分钟';
+  if (minutes < 60) return `${Math.round(minutes)}分钟`;
   const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
+  const m = Math.round(minutes % 60);
   return m > 0 ? `${h}小时${m}分钟` : `${h}小时`;
 }
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function computeExceedDuration(records: DeviceRecord[], params: TransportParams): number {
+function computeExceedDuration(records: MergedRecord[], params: TransportParams): number {
   let minutes = 0;
-  for (let i = 1; i < records.length; i++) {
-    const t = records[i].temperature;
+  const tempRecords = records.filter((r) => r.temperature !== undefined);
+  for (let i = 1; i < tempRecords.length; i++) {
+    const t = tempRecords[i].temperature!;
     if (t > params.tempUpper || t < params.tempLower) {
       const gap =
-        (new Date(records[i].timestamp).getTime() -
-          new Date(records[i - 1].timestamp).getTime()) /
+        (new Date(tempRecords[i].timestamp).getTime() -
+          new Date(tempRecords[i - 1].timestamp).getTime()) /
         60000;
       minutes += gap;
     }
   }
-  return Math.round(minutes);
+  return Math.round(Math.max(0, minutes));
 }
 
-function computeMaxDeviation(records: DeviceRecord[], params: TransportParams): number {
+function computeMaxDeviation(records: MergedRecord[], params: TransportParams): number {
   let maxDev = 0;
   for (const r of records) {
+    if (r.temperature === undefined) continue;
     if (r.temperature > params.tempUpper) {
       maxDev = Math.max(maxDev, r.temperature - params.tempUpper);
     } else if (r.temperature < params.tempLower) {
@@ -116,7 +120,7 @@ function generateRecommendations(
 }
 
 export function generateReport(
-  records: DeviceRecord[],
+  records: MergedRecord[],
   params: TransportParams,
   annotations: Annotation[],
   template: ReportTemplate
@@ -154,10 +158,12 @@ export function generateReport(
   lines.push('');
 
   if (records.length > 0) {
+    const tempCount = records.filter((r) => r.temperature !== undefined).length;
     lines.push('【运输时间范围】');
     lines.push(`  起始：${formatTime(records[0].timestamp)}`);
     lines.push(`  终止：${formatTime(records[records.length - 1].timestamp)}`);
-    lines.push(`  数据采样点：${records.length} 个`);
+    lines.push(`  合并时间点数：${records.length} 个`);
+    lines.push(`  有效温度采样点：${tempCount} 个`);
     lines.push('');
   }
 
@@ -192,7 +198,7 @@ export function generateReport(
 }
 
 export function getReportMetrics(
-  records: DeviceRecord[],
+  records: MergedRecord[],
   params: TransportParams,
   annotations: Annotation[]
 ) {

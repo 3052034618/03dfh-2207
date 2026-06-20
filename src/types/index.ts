@@ -12,12 +12,23 @@ export type ReportTemplate = 'customer' | 'internal_ops' | 'claims';
 export type FileStatus = 'pending' | 'parsing' | 'done' | 'error';
 
 export interface DeviceRecord {
+  id: string;
+  fileId: string;
   timestamp: string;
-  temperature: number;
-  humidity: number;
-  doorOpen: boolean;
-  latitude: number;
-  longitude: number;
+  temperature?: number;
+  humidity?: number;
+  doorOpen?: boolean;
+  latitude?: number;
+  longitude?: number;
+}
+
+export interface MergedRecord {
+  timestamp: string;
+  temperature?: number;
+  humidity?: number;
+  doorOpen?: boolean;
+  latitude?: number;
+  longitude?: number;
 }
 
 export interface TransportParams {

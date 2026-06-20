@@ -1,6 +1,6 @@
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import type { DeviceRecord } from '@/types';
+import type { DeviceRecord, MergedRecord, ImportedFile } from '@/types';
 
 function normalizeHeader(header: string): string {
   return header
@@ -78,6 +78,12 @@ function parseBoolean(val: unknown): boolean {
   return false;
 }
 
+function toNullableNumber(val: unknown): number | undefined {
+  if (val === null || val === undefined || val === '') return undefined;
+  const n = Number(val);
+  return isNaN(n) ? undefined : n;
+}
+
 function mapRowToRecord(
   row: Record<string, unknown>,
   timestampKey: string,
@@ -85,19 +91,47 @@ function mapRowToRecord(
   humidityKey: string | null,
   doorKey: string | null,
   latKey: string | null,
-  lngKey: string | null
+  lngKey: string | null,
+  fileId: string,
+  fileType: ImportedFile['type']
 ): DeviceRecord {
-  return {
+  const record: DeviceRecord = {
+    id: crypto.randomUUID(),
+    fileId,
     timestamp: parseTimestamp(row[timestampKey]),
-    temperature: tempKey ? Number(row[tempKey]) || 0 : 0,
-    humidity: humidityKey ? Number(row[humidityKey]) || 0 : 0,
-    doorOpen: doorKey ? parseBoolean(row[doorKey]) : false,
-    latitude: latKey ? Number(row[latKey]) || 0 : 0,
-    longitude: lngKey ? Number(row[lngKey]) || 0 : 0,
   };
+
+  if ((fileType === 'temperature' || fileType === 'humidity') && tempKey) {
+    const t = toNullableNumber(row[tempKey]);
+    if (t !== undefined) record.temperature = t;
+  }
+  if ((fileType === 'temperature' || fileType === 'humidity') && humidityKey) {
+    const h = toNullableNumber(row[humidityKey]);
+    if (h !== undefined) record.humidity = h;
+  }
+  if (fileType === 'door' && doorKey) {
+    record.doorOpen = parseBoolean(row[doorKey]);
+  }
+  if (fileType === 'gps' && latKey && lngKey) {
+    const lat = toNullableNumber(row[latKey]);
+    const lng = toNullableNumber(row[lngKey]);
+    if (lat !== undefined) record.latitude = lat;
+    if (lng !== undefined) record.longitude = lng;
+  }
+
+  if (tempKey && record.temperature === undefined && (fileType === 'temperature' || fileType === 'humidity')) {
+    const t = toNullableNumber(row[tempKey]);
+    if (t !== undefined) record.temperature = t;
+  }
+
+  return record;
 }
 
-export function parseCSV(content: string): DeviceRecord[] {
+export function parseCSV(
+  content: string,
+  fileId: string,
+  fileType: ImportedFile['type']
+): DeviceRecord[] {
   const result = Papa.parse<Record<string, unknown>>(content, {
     header: true,
     skipEmptyLines: true,
@@ -117,11 +151,15 @@ export function parseCSV(content: string): DeviceRecord[] {
   const lngKey = findKey(headers, LNG_KEYS);
 
   return result.data.map((row) =>
-    mapRowToRecord(row, timestampKey, tempKey, humidityKey, doorKey, latKey, lngKey)
+    mapRowToRecord(row, timestampKey, tempKey, humidityKey, doorKey, latKey, lngKey, fileId, fileType)
   );
 }
 
-export function parseExcel(buffer: ArrayBuffer): DeviceRecord[] {
+export function parseExcel(
+  buffer: ArrayBuffer,
+  fileId: string,
+  fileType: ImportedFile['type']
+): DeviceRecord[] {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
@@ -140,7 +178,7 @@ export function parseExcel(buffer: ArrayBuffer): DeviceRecord[] {
   const lngKey = findKey(headers, LNG_KEYS);
 
   return data.map((row) =>
-    mapRowToRecord(row, timestampKey, tempKey, humidityKey, doorKey, latKey, lngKey)
+    mapRowToRecord(row, timestampKey, tempKey, humidityKey, doorKey, latKey, lngKey, fileId, fileType)
   );
 }
 
@@ -162,6 +200,34 @@ export function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
   });
 }
 
+export function mergeRecordsByTimestamp(records: DeviceRecord[]): MergedRecord[] {
+  const map = new Map<string, MergedRecord>();
+
+  for (const r of records) {
+    const existing = map.get(r.timestamp);
+    if (existing) {
+      if (r.temperature !== undefined) existing.temperature = r.temperature;
+      if (r.humidity !== undefined) existing.humidity = r.humidity;
+      if (r.doorOpen !== undefined) existing.doorOpen = r.doorOpen;
+      if (r.latitude !== undefined) existing.latitude = r.latitude;
+      if (r.longitude !== undefined) existing.longitude = r.longitude;
+    } else {
+      map.set(r.timestamp, {
+        timestamp: r.timestamp,
+        temperature: r.temperature,
+        humidity: r.humidity,
+        doorOpen: r.doorOpen,
+        latitude: r.latitude,
+        longitude: r.longitude,
+      });
+    }
+  }
+
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+}
+
 export function computeDataSummary(records: DeviceRecord[]) {
   if (!records.length) return null;
 
@@ -170,29 +236,51 @@ export function computeDataSummary(records: DeviceRecord[]) {
   );
 
   let missingSegments = 0;
-  const avgIntervalMs =
-    (new Date(sorted[sorted.length - 1].timestamp).getTime() -
-      new Date(sorted[0].timestamp).getTime()) /
-    (sorted.length - 1);
+  let avgIntervalMs: number;
+  let intervalStr: string;
+  let completeness: number;
 
-  for (let i = 1; i < sorted.length; i++) {
-    const gap =
-      new Date(sorted[i].timestamp).getTime() -
-      new Date(sorted[i - 1].timestamp).getTime();
-    if (gap > avgIntervalMs * 3) missingSegments++;
+  if (sorted.length === 1) {
+    avgIntervalMs = 0;
+    intervalStr = '单条记录';
+    completeness = 100;
+  } else {
+    avgIntervalMs =
+      (new Date(sorted[sorted.length - 1].timestamp).getTime() -
+        new Date(sorted[0].timestamp).getTime()) /
+      (sorted.length - 1);
+
+    if (!isFinite(avgIntervalMs) || avgIntervalMs <= 0) {
+      avgIntervalMs = 0;
+      intervalStr = '时间戳异常';
+      completeness = 100;
+    } else {
+      for (let i = 1; i < sorted.length; i++) {
+        const gap =
+          new Date(sorted[i].timestamp).getTime() -
+          new Date(sorted[i - 1].timestamp).getTime();
+        if (gap > avgIntervalMs * 3) missingSegments++;
+      }
+
+      const totalExpectedSpan =
+        new Date(sorted[sorted.length - 1].timestamp).getTime() -
+        new Date(sorted[0].timestamp).getTime();
+      const actualSpan = (sorted.length - 1) * avgIntervalMs;
+      completeness = totalExpectedSpan > 0 ? Math.min(100, (actualSpan / totalExpectedSpan) * 100) : 100;
+
+      const intervalMinutes = Math.round(avgIntervalMs / 60000);
+      if (intervalMinutes >= 60) {
+        const h = Math.floor(intervalMinutes / 60);
+        const m = intervalMinutes % 60;
+        intervalStr = m > 0 ? `${h}小时${m}分钟` : `${h}小时`;
+      } else if (intervalMinutes >= 1) {
+        intervalStr = `${intervalMinutes}分钟`;
+      } else {
+        const intervalSeconds = Math.round(avgIntervalMs / 1000);
+        intervalStr = intervalSeconds > 0 ? `${intervalSeconds}秒` : '即时';
+      }
+    }
   }
-
-  const totalExpectedSpan =
-    new Date(sorted[sorted.length - 1].timestamp).getTime() -
-    new Date(sorted[0].timestamp).getTime();
-  const actualSpan = (sorted.length - 1) * avgIntervalMs;
-  const completeness = totalExpectedSpan > 0 ? Math.min(100, (actualSpan / totalExpectedSpan) * 100) : 100;
-
-  const intervalMinutes = Math.round(avgIntervalMs / 60000);
-  const intervalStr =
-    intervalMinutes >= 60
-      ? `${Math.floor(intervalMinutes / 60)}小时${intervalMinutes % 60 ? intervalMinutes % 60 + '分钟' : ''}`
-      : `${intervalMinutes}分钟`;
 
   return {
     timeRange: {

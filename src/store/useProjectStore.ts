@@ -9,11 +9,14 @@ import type {
   ReportTemplate,
   CargoType,
   AnomalyType,
+  MergedRecord,
 } from '@/types';
+import { mergeRecordsByTimestamp, computeDataSummary } from '@/utils/parsers';
 
 interface ProjectStore {
   project: Project | null;
   deviceRecords: DeviceRecord[];
+  mergedRecords: MergedRecord[];
   transportParams: TransportParams;
   importedFiles: ImportedFile[];
   dataSummary: DataSummary | null;
@@ -24,11 +27,11 @@ interface ProjectStore {
   setProject: (project: Project) => void;
   setDeviceRecords: (records: DeviceRecord[]) => void;
   addDeviceRecords: (records: DeviceRecord[]) => void;
+  removeRecordsByFileId: (fileId: string) => void;
   setTransportParams: (params: Partial<TransportParams>) => void;
   addImportedFile: (file: ImportedFile) => void;
   updateImportedFile: (id: string, updates: Partial<ImportedFile>) => void;
   removeImportedFile: (id: string) => void;
-  setDataSummary: (summary: DataSummary) => void;
   addAnnotation: (annotation: Annotation) => void;
   updateAnnotation: (id: string, updates: Partial<Annotation>) => void;
   removeAnnotation: (id: string) => void;
@@ -48,15 +51,23 @@ const defaultTransportParams: TransportParams = {
   unloadTime: '',
 };
 
+function refreshMerged(records: DeviceRecord[]) {
+  const merged = mergeRecordsByTimestamp(records);
+  const summary = computeDataSummary(records);
+  return { mergedRecords: merged, dataSummary: summary };
+}
+
 function generateDemoRecords(): DeviceRecord[] {
   const records: DeviceRecord[] = [];
   const startTime = new Date('2025-06-15T06:00:00');
   const totalMinutes = 48 * 60;
+  const tempFileId = 'demo-temp-file';
+  const doorFileId = 'demo-door-file';
+  const gpsFileId = 'demo-gps-file';
 
   for (let i = 0; i < totalMinutes; i += 5) {
     const time = new Date(startTime.getTime() + i * 60000);
     let temp = -16.5;
-    const hour = time.getHours();
 
     if (i < 60) {
       temp = -8 + Math.random() * 2;
@@ -72,28 +83,47 @@ function generateDemoRecords(): DeviceRecord[] {
       temp = -16.5 + Math.sin(i / 120) * 0.8 + (Math.random() - 0.5) * 0.4;
     }
 
+    records.push({
+      id: crypto.randomUUID(),
+      fileId: tempFileId,
+      timestamp: time.toISOString(),
+      temperature: Math.round(temp * 10) / 10,
+      humidity: Math.round((65 + Math.sin(i / 200) * 10 + Math.random() * 5) * 10) / 10,
+    });
+
     const doorOpen =
       (i > 1200 && i < 1215) ||
       (i > 2000 && i < 2030) ||
       (i > 2500 && i < 2510) ||
       (i > 2700 && i < 2705);
 
-    records.push({
-      timestamp: time.toISOString(),
-      temperature: Math.round(temp * 10) / 10,
-      humidity: Math.round((65 + Math.sin(i / 200) * 10 + Math.random() * 5) * 10) / 10,
-      doorOpen,
-      latitude: 31.23 + (i / totalMinutes) * 2.5,
-      longitude: 121.47 + (i / totalMinutes) * 1.8,
-    });
+    if (doorOpen || i % 25 === 0) {
+      records.push({
+        id: crypto.randomUUID(),
+        fileId: doorFileId,
+        timestamp: time.toISOString(),
+        doorOpen,
+      });
+    }
+
+    if (i % 10 === 0) {
+      records.push({
+        id: crypto.randomUUID(),
+        fileId: gpsFileId,
+        timestamp: time.toISOString(),
+        latitude: 31.23 + (i / totalMinutes) * 2.5,
+        longitude: 121.47 + (i / totalMinutes) * 1.8,
+      });
+    }
   }
 
   return records;
 }
 
-export const useProjectStore = create<ProjectStore>((set) => ({
+export const useProjectStore = create<ProjectStore>((set, get) => ({
   project: null,
   deviceRecords: [],
+  mergedRecords: [],
   transportParams: { ...defaultTransportParams },
   importedFiles: [],
   dataSummary: null,
@@ -103,10 +133,22 @@ export const useProjectStore = create<ProjectStore>((set) => ({
 
   setProject: (project) => set({ project }),
 
-  setDeviceRecords: (records) => set({ deviceRecords: records }),
+  setDeviceRecords: (records) => {
+    const { mergedRecords, dataSummary } = refreshMerged(records);
+    set({ deviceRecords: records, mergedRecords, dataSummary });
+  },
 
-  addDeviceRecords: (records) =>
-    set((state) => ({ deviceRecords: [...state.deviceRecords, ...records] })),
+  addDeviceRecords: (records) => {
+    const all = [...get().deviceRecords, ...records];
+    const { mergedRecords, dataSummary } = refreshMerged(all);
+    set({ deviceRecords: all, mergedRecords, dataSummary });
+  },
+
+  removeRecordsByFileId: (fileId) => {
+    const all = get().deviceRecords.filter((r) => r.fileId !== fileId);
+    const { mergedRecords, dataSummary } = refreshMerged(all);
+    set({ deviceRecords: all, mergedRecords, dataSummary });
+  },
 
   setTransportParams: (params) =>
     set((state) => ({
@@ -123,12 +165,18 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       ),
     })),
 
-  removeImportedFile: (id) =>
-    set((state) => ({
-      importedFiles: state.importedFiles.filter((f) => f.id !== id),
-    })),
-
-  setDataSummary: (summary) => set({ dataSummary: summary }),
+  removeImportedFile: (id) => {
+    const state = get();
+    const remaining = state.importedFiles.filter((f) => f.id !== id);
+    const remainingRecords = state.deviceRecords.filter((r) => r.fileId !== id);
+    const { mergedRecords, dataSummary } = refreshMerged(remainingRecords);
+    set({
+      importedFiles: remaining,
+      deviceRecords: remainingRecords,
+      mergedRecords,
+      dataSummary,
+    });
+  },
 
   addAnnotation: (annotation) =>
     set((state) => ({ annotations: [...state.annotations, annotation] })),
@@ -153,6 +201,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
     set({
       project: null,
       deviceRecords: [],
+      mergedRecords: [],
       transportParams: { ...defaultTransportParams },
       importedFiles: [],
       dataSummary: null,
@@ -163,6 +212,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
 
   loadDemoData: () => {
     const records = generateDemoRecords();
+    const { mergedRecords, dataSummary } = refreshMerged(records);
     const project: Project = {
       id: crypto.randomUUID(),
       name: '上海→北京 冻肉运输 #SH-BJ-20250615',
@@ -171,47 +221,44 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       updatedAt: new Date().toISOString(),
     };
 
-    const summary: DataSummary = {
-      timeRange: {
-        start: records[0].timestamp,
-        end: records[records.length - 1].timestamp,
-      },
-      totalRecords: records.length,
-      samplingInterval: '5分钟',
-      missingSegments: 2,
-      completeness: 99.2,
-    };
+    const firstWithTemp = mergedRecords.find((r) => r.temperature !== undefined);
+    const startTs = firstWithTemp ? firstWithTemp.timestamp : mergedRecords[0]?.timestamp;
 
     const demoAnnotations: Annotation[] = [
       {
         id: crypto.randomUUID(),
         type: 'insufficient_precool' as AnomalyType,
-        startTime: records[0].timestamp,
-        endTime: records[35].timestamp,
+        startTime: startTs,
+        endTime: mergedRecords[35]?.timestamp || startTs,
         duration: 180,
         basis: '装车前集装箱预冷仅至-8℃，未达到-15℃要求，导致前3小时温度持续偏高',
       },
       {
         id: crypto.randomUUID(),
         type: 'prolonged_door_open' as AnomalyType,
-        startTime: records[240].timestamp,
-        endTime: records[243].timestamp,
+        startTime: mergedRecords[240]?.timestamp || startTs,
+        endTime: mergedRecords[243]?.timestamp || startTs,
         duration: 15,
         basis: '中途停靠服务区时开门15分钟，温度上升至-11℃，超出温区上限',
       },
       {
         id: crypto.randomUUID(),
         type: 'yard_power_outage' as AnomalyType,
-        startTime: records[400].timestamp,
-        endTime: records[420].timestamp,
+        startTime: mergedRecords[400]?.timestamp || startTs,
+        endTime: mergedRecords[420]?.timestamp || startTs,
         duration: 100,
         basis: '堆场等候卸货期间制冷设备断电约100分钟，温度回升至-12℃',
       },
     ];
 
+    const tempFileId = 'demo-temp-file';
+    const doorFileId = 'demo-door-file';
+    const gpsFileId = 'demo-gps-file';
+
     set({
       project,
       deviceRecords: records,
+      mergedRecords,
       transportParams: {
         tempLower: -18,
         tempUpper: -15,
@@ -223,28 +270,28 @@ export const useProjectStore = create<ProjectStore>((set) => ({
       },
       importedFiles: [
         {
-          id: crypto.randomUUID(),
+          id: tempFileId,
           name: 'recool_temp_humidity.csv',
           type: 'temperature',
           status: 'done',
-          recordCount: records.length,
+          recordCount: records.filter((r) => r.fileId === tempFileId).length,
         },
         {
-          id: crypto.randomUUID(),
+          id: doorFileId,
           name: 'recool_door_events.csv',
           type: 'door',
           status: 'done',
-          recordCount: 8,
+          recordCount: records.filter((r) => r.fileId === doorFileId).length,
         },
         {
-          id: crypto.randomUUID(),
+          id: gpsFileId,
           name: 'recool_gps_track.csv',
           type: 'gps',
           status: 'done',
-          recordCount: records.length,
+          recordCount: records.filter((r) => r.fileId === gpsFileId).length,
         },
       ],
-      dataSummary: summary,
+      dataSummary,
       annotations: demoAnnotations,
       selectedTemplate: 'customer' as ReportTemplate,
       activeAnnotation: null,

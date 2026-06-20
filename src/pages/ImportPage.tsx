@@ -22,7 +22,6 @@ import {
   parseExcel,
   readFileAsText,
   readFileAsArrayBuffer,
-  computeDataSummary,
 } from '@/utils/parsers';
 
 function detectFileType(filename: string): ImportedFile['type'] {
@@ -69,7 +68,7 @@ export default function ImportPage() {
   const navigate = useNavigate();
   const {
     project,
-    deviceRecords,
+    mergedRecords,
     transportParams,
     importedFiles,
     dataSummary,
@@ -78,8 +77,7 @@ export default function ImportPage() {
     addImportedFile,
     updateImportedFile,
     removeImportedFile,
-    setDataSummary,
-    setDeviceRecords,
+    addDeviceRecords,
     loadDemoData,
   } = useProjectStore();
 
@@ -122,10 +120,10 @@ export default function ImportPage() {
 
         if (file.name.endsWith('.csv')) {
           const text = await readFileAsText(file);
-          records = parseCSV(text);
+          records = parseCSV(text, fileId, fileType);
         } else if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
           const buffer = await readFileAsArrayBuffer(file);
-          records = parseExcel(buffer);
+          records = parseExcel(buffer, fileId, fileType);
         } else {
           updateImportedFile(fileId, {
             status: 'error',
@@ -147,11 +145,7 @@ export default function ImportPage() {
           recordCount: records.length,
         });
 
-        setDeviceRecords([...deviceRecords, ...records]);
-
-        const allRecords = [...deviceRecords, ...records];
-        const summary = computeDataSummary(allRecords);
-        if (summary) setDataSummary(summary);
+        addDeviceRecords(records);
       } catch {
         updateImportedFile(fileId, {
           status: 'error',
@@ -159,7 +153,7 @@ export default function ImportPage() {
         });
       }
     },
-    [deviceRecords, addImportedFile, updateImportedFile, setDeviceRecords, setDataSummary]
+    [addImportedFile, updateImportedFile, addDeviceRecords]
   );
 
   const handleFiles = useCallback(
@@ -207,7 +201,7 @@ export default function ImportPage() {
     [removeImportedFile]
   );
 
-  const canProceed = deviceRecords.length > 0;
+  const canProceed = mergedRecords.some((r) => r.temperature !== undefined);
 
   return (
     <div className="h-full overflow-auto p-6 space-y-6">
